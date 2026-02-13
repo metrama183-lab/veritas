@@ -233,14 +233,25 @@ async function generateTextWithRetry(
             return text;
         } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e);
-            const isRateLimit = msg.includes("Rate limit") || msg.includes("429") || msg.includes("TPM");
+            const isRateLimit = msg.includes("Rate limit") || msg.includes("429") || msg.includes("TPM") || msg.includes("TPD") || msg.includes("tokens per");
 
             if (isRateLimit && attempt < maxRetries - 1) {
-                // Exponential backoff: 10s, 20s, 40s
-                const waitTime = 10000 * Math.pow(2, attempt);
+                // Exponential backoff: 5s, 10s
+                const waitTime = 5000 * Math.pow(2, attempt);
                 console.log(`[Veritas] Rate limited, waiting ${waitTime / 1000}s before retry ${attempt + 2}/${maxRetries}...`);
                 await new Promise(r => setTimeout(r, waitTime));
                 continue;
+            }
+
+            // Last resort: if heavy model is rate-limited, fall back to light model
+            if (isRateLimit && useModel !== modelLight && isGroq) {
+                console.log(`[Veritas] Heavy model rate-limited, falling back to light model...`);
+                try {
+                    const { text } = await generateText({ model: modelLight, prompt });
+                    return text;
+                } catch (fallbackErr) {
+                    console.error("[Veritas] Fallback model also failed:", fallbackErr);
+                }
             }
 
             throw e;
