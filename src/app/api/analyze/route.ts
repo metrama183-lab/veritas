@@ -258,9 +258,10 @@ async function verifyClaim(
 
     try {
         const searchResult = await tvly.search(query, {
-            search_depth: "advanced",
-            max_results: 3,
+            searchDepth: "advanced",
+            maxResults: 5,
             topic: "general",
+            includeAnswer: "advanced",
         });
 
         if (!searchResult.results || searchResult.results.length === 0) {
@@ -280,12 +281,14 @@ async function verifyClaim(
             )
             .join("\n");
         const sourceUrl = searchResult.results[0]?.url || "Web Search";
+        const tavilyAnswer = (searchResult as any).answer || "";
 
         const text = await generateTextWithRetry(
-            `Fact-check this claim using the search results below.
+            `Fact-check this claim using the search results and AI summary below.
 
 Claim: "${claim}"
 Date: ${new Date().toISOString().split("T")[0]}
+${tavilyAnswer ? `\nAI Search Summary: ${tavilyAnswer.slice(0, 500)}` : ""}
 
 Sources:
 ${context}

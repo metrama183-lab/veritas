@@ -76,7 +76,7 @@ export async function transcribeAudio(filePath: string): Promise<string> {
     try {
         const transcription = await groq.audio.transcriptions.create({
             file: fs.createReadStream(filePath),
-            model: "whisper-large-v3", // Groq's fast whisper model
+            model: "whisper-large-v3-turbo", // Groq's fastest production whisper model
             response_format: "text", // strict text response
             temperature: 0.0,
         });
