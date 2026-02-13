@@ -16,15 +16,10 @@ export function UrlInput() {
         if (!url) return;
 
         setIsLoading(true);
-        // Simulate navigation/processing for now or redirect to analyze page
-        // In real app: router.push(`/analyze?url=${encodeURIComponent(url)}`);
-        console.log("Analyzing:", url);
 
-        // Demo delay
-        setTimeout(() => {
-            setIsLoading(false);
-            alert("Analysis engine not connected yet!");
-        }, 1000);
+        // Encode and redirect
+        const encodedUrl = encodeURIComponent(url);
+        router.push(`/report?q=${encodedUrl}`);
     };
 
     return (
