@@ -24,14 +24,24 @@ const groq = createOpenAI({
 // Auto-select: Google > Groq > OpenAI
 const isGroq = !process.env.GOOGLE_GENERATIVE_AI_API_KEY && !!process.env.GROQ_API_KEY;
 
-const model =
+// Tiered model strategy for Groq free tier:
+// - modelHeavy (70B): used ONLY for claim extraction & manipulation analysis (complex reasoning)
+// - modelLight (8B):  used for individual claim verification & summary (simple, repetitive)
+// This splits token usage across two separate Groq rate-limit pools (each model has its own TPD)
+const modelHeavy =
     process.env.GOOGLE_GENERATIVE_AI_API_KEY
         ? google("gemini-1.5-flash")
         : process.env.GROQ_API_KEY
             ? groq("llama-3.3-70b-versatile")
             : openai("gpt-4o");
 
-// Groq has very low TPM (6000) — limit transcript size & concurrency
+const modelLight =
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY
+        ? google("gemini-1.5-flash")
+        : process.env.GROQ_API_KEY
+            ? groq("llama-3.1-8b-instant")
+            : openai("gpt-4o");
+
 const MAX_TRANSCRIPT_CHARS = isGroq ? 24000 : 15000;
 const VERIFY_CONCURRENCY = isGroq ? 1 : 3;
 const VERIFY_DELAY_MS = isGroq ? 2000 : 300;
@@ -213,11 +223,13 @@ function fixUnescapedQuotes(json: string): string {
 
 async function generateTextWithRetry(
     prompt: string,
-    maxRetries = 3,
+    options?: { model?: Parameters<typeof generateText>[0]["model"]; maxRetries?: number },
 ): Promise<string> {
+    const useModel = options?.model ?? modelLight;
+    const maxRetries = options?.maxRetries ?? 3;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
-            const { text } = await generateText({ model, prompt });
+            const { text } = await generateText({ model: useModel, prompt });
             return text;
         } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e);
@@ -417,6 +429,7 @@ Also provide:
 
 Return ONLY valid JSON:
 {"tactics":[{"tactic":"Appeal to Emotion","score":0-100,"example":"...","explanation":"..."},...],"manipulationScore":0-100,"summary":"..."}`,
+            { model: modelHeavy },
         );
 
         const parsed = extractJSON(text);
@@ -579,7 +592,8 @@ Return ONLY compact JSON: {"topic":"Subject","claims":[{"claim":"...","timestamp
 
             console.log(`[Veritas] Extracting claims (${mode} mode)...`);
             const text = await generateTextWithRetry(
-                `${systemPrompt}\n\nText:\n"${transcriptText.slice(0, MAX_TRANSCRIPT_CHARS)}"`
+                `${systemPrompt}\n\nText:\n"${transcriptText.slice(0, MAX_TRANSCRIPT_CHARS)}"`,
+                { model: modelHeavy },
             );
             console.log(`[Veritas DEBUG] ${mode.toUpperCase()} Output:`, text.slice(0, 100) + "...");
             return { text, data: extractJSON(text) };
