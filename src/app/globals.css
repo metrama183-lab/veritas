@@ -3,7 +3,8 @@
 :root {
   --background: #000000;
   --foreground: #ffffff;
-  --primary: #dc2626; /* Red-600 for "Bullshit" detection alert style */
+  --primary: #dc2626;
+  /* Red-600 for "Bullshit" detection alert style */
   --secondary: #27272a;
 }
 
@@ -25,13 +26,16 @@ body {
 ::-webkit-scrollbar {
   width: 8px;
 }
+
 ::-webkit-scrollbar-track {
   background: #000;
 }
+
 ::-webkit-scrollbar-thumb {
   background: #333;
   border-radius: 4px;
 }
+
 ::-webkit-scrollbar-thumb:hover {
   background: #555;
 }

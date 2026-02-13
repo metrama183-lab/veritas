@@ -1,36 +1,68 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# VERITAS — AI-Powered Bullshit Detector
+
+> Paste any YouTube video URL and Veritas will extract the transcript, identify factual claims, cross-reference them against trusted web sources, and give you a real-time truth score.
+
+**Built for NorCal Hacks 2026**
+
+## What It Does
+
+1. **Transcription** — Automatically extracts captions or downloads audio and transcribes via Groq Whisper
+2. **Claim Extraction** — LLM identifies up to 10 falsifiable claims from the transcript
+3. **Web Verification** — Each claim is searched against real-time web sources via Tavily
+4. **Truth Scoring** — AI verdicts (True / False / Unverified) with confidence levels and source links
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Next.js 16, React 19, Tailwind CSS 4, Framer Motion |
+| AI Models | Groq (Llama 3.3 70B) for claim extraction & verification |
+| Transcription | Groq Whisper Large V3, youtube-transcript, custom caption scraper |
+| Web Search | Tavily API (advanced search) |
+| Validation | Zod schemas, robust JSON repair for LLM outputs |
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+- Node.js 18+
+- API keys for Groq and Tavily (free tiers work)
+
+### Setup
+
+```bash
+git clone <repo-url>
+cd veritas
+npm install
+```
+
+Create `.env.local`:
+```
+GROQ_API_KEY=your_groq_api_key
+TAVILY_API_KEY=your_tavily_api_key
+```
+
+### Run
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## How It Works
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+YouTube URL → Transcript Extraction (3 fallback strategies)
+           → LLM Claim Extraction (strict → relaxed fallback)
+           → Tavily Web Search per claim
+           → LLM Verdict Generation per claim
+           → Truth Score & Summary
+```
 
-## Learn More
+## Features
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **Multi-strategy transcription**: YouTube captions → custom HTML scraper → audio download + Whisper
+- **Robust JSON parsing**: Handles truncated/malformed LLM outputs with bracket repair
+- **Rate limit awareness**: Exponential backoff, sequential processing for free-tier APIs
+- **Manual text mode**: Paste any text directly for fact-checking without a video
+- **Beautiful dark UI**: Animated loading states, expandable claim cards, confidence bars
