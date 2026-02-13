@@ -6,6 +6,9 @@ import { motion } from "framer-motion";
 import { AlertTriangle, CheckCircle, XCircle, ArrowLeft, ExternalLink, ChevronDown, ChevronUp } from "lucide-react";
 import Link from "next/link";
 import { LoadingScreen } from "@/components/loading-screen";
+import { BullshitMeter } from "@/components/bullshit-meter";
+import { ManipulationRadar } from "@/components/manipulation-radar";
+import { VideoTimeline } from "@/components/video-timeline";
 import { cn, extractVideoId } from "@/lib/utils";
 
 interface Claim {
@@ -17,12 +20,26 @@ interface Claim {
     reasoning: string;
 }
 
+interface ManipulationTactic {
+    tactic: string;
+    score: number;
+    example: string;
+    explanation: string;
+}
+
+interface ManipulationData {
+    tactics: ManipulationTactic[];
+    manipulationScore: number;
+    summary: string;
+}
+
 interface AnalysisResult {
     url: string | null;
     topic: string;
     summary: string;
     truthScore: number;
     claims: Claim[];
+    manipulation?: ManipulationData;
     meta: {
         totalClaims: number;
         trueCount: number;
@@ -100,6 +117,7 @@ function ReportPageContent() {
                     summary: data.summary || "",
                     truthScore: data.truthScore ?? 0,
                     claims: data.claims || [],
+                    manipulation: data.manipulation || undefined,
                     meta: data.meta || {
                         totalClaims: (data.claims || []).length,
                         trueCount: 0,
@@ -186,6 +204,21 @@ function ReportPageContent() {
                         </motion.div>
                     )}
 
+                    {/* Video Timeline with claim markers */}
+                    {!loading && !error && claims.length > 0 && (
+                        <motion.div
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: 0.15 }}
+                            className="p-4 rounded-2xl bg-zinc-900/60 border border-zinc-800"
+                        >
+                            <VideoTimeline
+                                claims={claims}
+                                onClaimClick={(idx) => setExpandedClaim(expandedClaim === idx ? null : idx)}
+                            />
+                        </motion.div>
+                    )}
+
                     {/* AI Summary */}
                     {!loading && !error && result?.summary && (
                         <motion.div
@@ -200,11 +233,38 @@ function ReportPageContent() {
                             <p className="text-zinc-300 leading-relaxed">{result.summary}</p>
                         </motion.div>
                     )}
+
+                    {/* Manipulation Radar */}
+                    {!loading && !error && result?.manipulation && (
+                        <motion.div
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: 0.4 }}
+                            className="p-5 rounded-2xl bg-zinc-900/60 border border-zinc-800"
+                        >
+                            <ManipulationRadar
+                                tactics={result.manipulation.tactics}
+                                manipulationScore={result.manipulation.manipulationScore}
+                                summary={result.manipulation.summary}
+                            />
+                        </motion.div>
+                    )}
                 </div>
 
-                {/* ===== Right Column: Claims Timeline ===== */}
+                {/* ===== Right Column: Scores + Claims ===== */}
                 <div className="space-y-4">
-                    <h3 className="text-xl font-semibold sticky top-4">Truth Timeline</h3>
+                    {/* BullshitMeter */}
+                    {!loading && !error && result && (
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.9 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            className="flex justify-center p-4 rounded-2xl bg-zinc-900/60 border border-zinc-800"
+                        >
+                            <BullshitMeter score={result.truthScore} size={180} />
+                        </motion.div>
+                    )}
+
+                    <h3 className="text-xl font-semibold sticky top-4">Verified Claims</h3>
 
                     {loading ? (
                         <div className="flex flex-col items-center justify-center min-h-[400px]">

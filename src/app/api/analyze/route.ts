@@ -68,6 +68,36 @@ const VerificationSchema = z.object({
 });
 
 // ============================================================
+// Manipulation / Propaganda Tactics
+// ============================================================
+
+const TACTICS = [
+    "Appeal to Emotion",
+    "Appeal to Authority",
+    "Cherry-Picking",
+    "False Dichotomy",
+    "Loaded Language",
+    "Bandwagon",
+    "Strawman",
+    "Repetition",
+] as const;
+
+type TacticName = typeof TACTICS[number];
+
+interface ManipulationTactic {
+    tactic: TacticName;
+    score: number;       // 0–100 intensity
+    example: string;     // quote from transcript
+    explanation: string; // why this is manipulative
+}
+
+interface ManipulationAnalysis {
+    tactics: ManipulationTactic[];
+    manipulationScore: number; // 0–100 overall
+    summary: string;
+}
+
+// ============================================================
 // Robust JSON Extraction (handles truncated Groq responses)
 // ============================================================
 
@@ -342,6 +372,85 @@ async function verifyClaims(
 }
 
 // ============================================================
+// Manipulation / Propaganda Tactics Analysis
+// ============================================================
+
+async function analyzeManipulation(
+    transcriptText: string,
+    topic: string,
+): Promise<ManipulationAnalysis> {
+    const defaultResult: ManipulationAnalysis = {
+        tactics: TACTICS.map(t => ({ tactic: t, score: 0, example: "", explanation: "" })),
+        manipulationScore: 0,
+        summary: "Could not analyze manipulation tactics.",
+    };
+
+    try {
+        const text = await generateTextWithRetry(
+            `You are an expert in rhetoric, propaganda analysis, and media literacy.
+Analyze this transcript for manipulation and persuasion tactics.
+
+Topic: "${topic}"
+Transcript (excerpt):
+"${transcriptText.slice(0, Math.min(transcriptText.length, 8000))}"
+
+For EACH of these 8 tactics, rate how intensely it is used (0 = not present, 100 = heavily used).
+If the tactic IS present, provide a SHORT quote from the text as example and a 1-sentence explanation.
+If the tactic is NOT present (score 0), leave example and explanation empty.
+
+Tactics to analyze:
+1. Appeal to Emotion — Using fear, anger, sympathy, or outrage to bypass rational thinking
+2. Appeal to Authority — Citing vague "experts" or "studies" without naming specifics
+3. Cherry-Picking — Selecting only data/facts that support the narrative while ignoring contradicting evidence
+4. False Dichotomy — Presenting only two options when more exist ("either you agree or you're the enemy")
+5. Loaded Language — Using emotionally charged, biased, or inflammatory words to influence perception
+6. Bandwagon — "Everyone knows...", "Most people agree...", implying consensus without evidence
+7. Strawman — Misrepresenting the opposing view to make it easier to attack
+8. Repetition — Repeating key claims/phrases multiple times to make them seem more true
+
+Also provide:
+- manipulationScore: 0-100 overall manipulation intensity
+- summary: 1 sentence describing the overall rhetorical strategy
+
+Return ONLY valid JSON:
+{"tactics":[{"tactic":"Appeal to Emotion","score":0-100,"example":"...","explanation":"..."},...],"manipulationScore":0-100,"summary":"..."}`,
+        );
+
+        const parsed = extractJSON(text);
+        if (!parsed || !Array.isArray(parsed.tactics)) {
+            console.warn("[Veritas] Manipulation analysis: failed to parse response");
+            return defaultResult;
+        }
+
+        // Map parsed tactics to our strict format, ensuring all 8 are present
+        const parsedTactics = parsed.tactics as Array<Record<string, unknown>>;
+        const tactics: ManipulationTactic[] = TACTICS.map(tacticName => {
+            const found = parsedTactics.find(
+                (t) => typeof t.tactic === "string" && t.tactic.toLowerCase().includes(tacticName.toLowerCase().split(" ")[0])
+            );
+            return {
+                tactic: tacticName,
+                score: found && typeof found.score === "number" ? Math.min(100, Math.max(0, found.score)) : 0,
+                example: found && typeof found.example === "string" ? found.example.slice(0, 200) : "",
+                explanation: found && typeof found.explanation === "string" ? found.explanation.slice(0, 200) : "",
+            };
+        });
+
+        const manipulationScore = typeof parsed.manipulationScore === "number"
+            ? Math.min(100, Math.max(0, parsed.manipulationScore))
+            : Math.round(tactics.reduce((sum, t) => sum + t.score, 0) / tactics.length);
+
+        const summary = typeof parsed.summary === "string" ? parsed.summary : defaultResult.summary;
+
+        console.log(`[Veritas] Manipulation analysis complete. Score: ${manipulationScore}/100`);
+        return { tactics, manipulationScore, summary };
+    } catch (e) {
+        console.error("[Veritas] Manipulation analysis failed:", e);
+        return defaultResult;
+    }
+}
+
+// ============================================================
 // Generate Overall Summary
 // ============================================================
 
@@ -531,10 +640,18 @@ Return ONLY compact JSON: {"topic":"Subject","claims":[{"claim":"...","timestamp
         console.log(`[Veritas] Verifying ${claims.length} claims (delay: ${VERIFY_DELAY_MS}ms, provider: ${isGroq ? "Groq" : "other"})...`);
         const verifiedClaims = await verifyClaims(claims, topic);
 
-        // ── Step 4: Generate summary ─────────────────────────────
-        // Wait before summary to avoid rate limit
+        // ── Step 4: Summary + Manipulation Analysis (parallel) ───
+        // Wait before next LLM calls to avoid rate limit
         if (isGroq) await new Promise(r => setTimeout(r, 3000));
-        const summary = await generateSummary(topic, verifiedClaims);
+
+        const [summary, manipulation] = await Promise.all([
+            generateSummary(topic, verifiedClaims),
+            (async () => {
+                // Small delay to stagger the two parallel calls for Groq
+                if (isGroq) await new Promise(r => setTimeout(r, 2000));
+                return analyzeManipulation(transcriptText, topic);
+            })(),
+        ]);
 
         // ── Step 5: Compute score ────────────────────────────────
         const trueCount = verifiedClaims.filter(c => c.verdict === "True").length;
@@ -545,7 +662,7 @@ Return ONLY compact JSON: {"topic":"Subject","claims":[{"claim":"...","timestamp
             ? Math.round((trueCount / decidedCount) * 100)
             : (verifiedClaims.length > 0 ? 50 : 0); // If all unverified, neutral 50
 
-        console.log(`[Veritas] ✓ Analysis complete. Score: ${truthScore}/100, Claims: ${verifiedClaims.length}`);
+        console.log(`[Veritas] ✓ Analysis complete. Score: ${truthScore}/100, Claims: ${verifiedClaims.length}, Manipulation: ${manipulation.manipulationScore}/100`);
 
         return NextResponse.json({
             url: url || null,
@@ -553,6 +670,7 @@ Return ONLY compact JSON: {"topic":"Subject","claims":[{"claim":"...","timestamp
             summary,
             truthScore,
             claims: verifiedClaims,
+            manipulation,
             meta: {
                 totalClaims: verifiedClaims.length,
                 trueCount,
