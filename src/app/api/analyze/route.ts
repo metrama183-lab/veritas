@@ -185,6 +185,8 @@ function extractJSON(text: string): Record<string, unknown> | null {
     cleaned = cleaned.replace(/\}\s*\{/g, "},{");
     // 2. Fix missing commas between array items: `] [` → `],[`
     cleaned = cleaned.replace(/\]\s*\[/g, "],[");
+    // 2b. Fix malformed claims lists like `[ {..} ], [ {..} ]` → `{..}, {..}`
+    cleaned = cleaned.replace(/\]\s*,\s*\[\s*\{/g, ",{");
     // 3. Fix trailing commas before closing brackets: `,]` → `]` and `,}` → `}`
     cleaned = cleaned.replace(/,\s*\]/g, "]").replace(/,\s*\}/g, "}");
 
@@ -268,6 +270,35 @@ function extractJSON(text: string): Record<string, unknown> | null {
     }
 
     return null;
+}
+
+function salvageClaimsFromMalformedOutput(
+    text: string,
+    fallbackTopic: string,
+): { topic: string; claims: ExtractedClaim[] } | null {
+    const topicMatch = text.match(/"topic"\s*:\s*"([^"]{2,180})"/i);
+    const topic = (topicMatch?.[1] || fallbackTopic || "General").trim();
+
+    const claimMatches = [...text.matchAll(/"claim"\s*:\s*"([^"]{6,700})"/g)];
+    if (claimMatches.length === 0) return null;
+
+    const seen = new Set<string>();
+    const claims: ExtractedClaim[] = [];
+
+    for (const m of claimMatches) {
+        const claimText = m[1].trim().replace(/\\n/g, " ");
+        if (!claimText || seen.has(claimText.toLowerCase())) continue;
+        seen.add(claimText.toLowerCase());
+        claims.push({
+            claim: claimText,
+            timestamp: "Unknown",
+            query: `${topic} ${claimText}`.slice(0, 280),
+        });
+        if (claims.length >= MAX_CLAIMS) break;
+    }
+
+    if (claims.length === 0) return null;
+    return { topic, claims };
 }
 
 // Fix unescaped double-quotes inside JSON string values
@@ -415,7 +446,7 @@ Rules:
 Return ONLY JSON: {"verdict":"True"|"False"|"Unverified","confidence":0.0-1.0,"reasoning":"..."}`,
         );
 
-        const parsed = extractJSON(text);
+        let parsed = extractJSON(text);
         if (!parsed) {
             return {
                 claim, timestamp,
@@ -535,10 +566,31 @@ Return ONLY valid JSON:
             { model: modelHeavy },
         );
 
-        const parsed = extractJSON(text);
+        let parsed = extractJSON(text);
         if (!parsed || !Array.isArray(parsed.tactics)) {
-            console.warn("[Veritas] Manipulation analysis: failed to parse response");
-            return defaultResult;
+            console.warn("[Veritas] Manipulation analysis: failed to parse response, attempting JSON repair...");
+            try {
+                const repairedText = await generateTextWithRetry(
+                    `Convert the following output into STRICT valid JSON with this exact schema:
+{"tactics":[{"tactic":"Appeal to Emotion","score":0,"example":"","explanation":""}],"manipulationScore":0,"summary":""}
+
+Rules:
+- Output JSON only
+- Keep all 8 tactics if present, otherwise include with score 0
+- score and manipulationScore must be numbers 0-100
+
+Output to repair:
+${text.slice(0, 3500)}`,
+                    { model: modelLight, maxRetries: 1 },
+                );
+                const repairedParsed = extractJSON(repairedText);
+                if (!repairedParsed || !Array.isArray(repairedParsed.tactics)) {
+                    return defaultResult;
+                }
+                parsed = repairedParsed;
+            } catch {
+                return defaultResult;
+            }
         }
 
         // Map parsed tactics to our strict format, ensuring all 8 are present
@@ -723,9 +775,16 @@ Return ONLY compact JSON: {"topic":"Subject","claims":[{"claim":"...","timestamp
         let result = await extractClaimsWithMode("strict");
         let extracted = result.data;
 
-        // 2. logic: If 0 claims found, RETRY with RELAXED mode
-        if (!extracted || !extracted.claims || (Array.isArray(extracted.claims) && extracted.claims.length === 0)) {
-            console.warn("[Veritas] Strict mode yielded 0 claims. Retrying with RELAXED mode...");
+        // 2. If strict extraction is empty/too sparse, retry with RELAXED mode
+        const strictClaimsCount = extracted && Array.isArray(extracted.claims) ? extracted.claims.length : 0;
+        const shouldRetryRelaxed =
+            !extracted ||
+            !Array.isArray(extracted.claims) ||
+            strictClaimsCount === 0 ||
+            (strictClaimsCount < 3 && transcriptText.length > 500);
+
+        if (shouldRetryRelaxed) {
+            console.warn(`[Veritas] Strict mode yielded ${strictClaimsCount} claims. Retrying with RELAXED mode...`);
             result = await extractClaimsWithMode("relaxed");
             extracted = result.data;
         }
@@ -735,6 +794,14 @@ Return ONLY compact JSON: {"topic":"Subject","claims":[{"claim":"...","timestamp
 
 
         // (Old fallback logic removed as it's handled by helper)
+
+        if (!extracted) {
+            const salvaged = salvageClaimsFromMalformedOutput(generatedText, "General");
+            if (salvaged && salvaged.claims.length > 0) {
+                console.warn(`[Veritas] Salvaged ${salvaged.claims.length} claims from malformed extraction output.`);
+                extracted = salvaged as unknown as Record<string, unknown>;
+            }
+        }
 
         if (!extracted) {
             console.error("[Veritas] Failed to parse claims from LLM:", generatedText.slice(0, 500));

@@ -8,6 +8,40 @@ export interface TranscriptSegment {
     duration: number;
 }
 
+let whisperBlockedUntil = 0;
+
+function parseRetryAfterMs(message: string): number | null {
+    const hours = message.match(/(\d+)h/i);
+    const minutes = message.match(/(\d+)m/i);
+    const seconds = message.match(/(\d+(?:\.\d+)?)s/i);
+
+    if (!hours && !minutes && !seconds) return null;
+
+    const totalSeconds =
+        (hours ? Number(hours[1]) * 3600 : 0) +
+        (minutes ? Number(minutes[1]) * 60 : 0) +
+        (seconds ? Number(seconds[1]) : 0);
+
+    return Math.max(0, Math.round(totalSeconds * 1000));
+}
+
+function isWhisperRateLimited(message: string): boolean {
+    const lower = message.toLowerCase();
+    return (
+        lower.includes("whisper-large-v3-turbo") &&
+        (lower.includes("rate limit") || lower.includes("429"))
+    );
+}
+
+function markWhisperCooldown(message: string): void {
+    const retryMs = parseRetryAfterMs(message) ?? 10 * 60 * 1000;
+    whisperBlockedUntil = Math.max(whisperBlockedUntil, Date.now() + retryMs);
+}
+
+function isWhisperOnCooldown(): boolean {
+    return Date.now() < whisperBlockedUntil;
+}
+
 export async function getTranscript(url: string): Promise<TranscriptSegment[]> {
     const videoId = extractVideoId(url);
     if (!videoId) throw new Error("Cannot extract video ID from URL");
@@ -46,23 +80,35 @@ export async function getTranscript(url: string): Promise<TranscriptSegment[]> {
     }
 
     // Strategy 3: Audio Download + Groq Whisper (nuclear option for videos without captions)
-    try {
-        console.log("[Veritas] Attempting Strategy 3: Audio download + Whisper transcription...");
-        const { getAudioTranscript } = await import("./audio-transcription");
-        const fullText = await getAudioTranscript(url, videoId);
-
-        if (fullText && fullText.trim().length > 0) {
-            console.log(`[Veritas] Strategy 3 (audio): ${fullText.length} chars transcribed`);
-            return [{
-                text: fullText,
-                start: 0,
-                duration: 0
-            }];
-        }
-    } catch (e: any) {
-        const msg = e?.message || String(e);
+    if (isWhisperOnCooldown()) {
+        const remainingSeconds = Math.ceil((whisperBlockedUntil - Date.now()) / 1000);
+        const msg = `Whisper cooldown active (${remainingSeconds}s left)`;
         errors.push(`Strategy 3: ${msg}`);
-        console.error("[Veritas] Strategy 3 (audio) failed:", msg);
+        console.warn(`[Veritas] Strategy 3 skipped: ${msg}`);
+    } else {
+        try {
+            console.log("[Veritas] Attempting Strategy 3: Audio download + Whisper transcription...");
+            const { getAudioTranscript } = await import("./audio-transcription");
+            const fullText = await getAudioTranscript(url, videoId);
+
+            if (fullText && fullText.trim().length > 0) {
+                console.log(`[Veritas] Strategy 3 (audio): ${fullText.length} chars transcribed`);
+                return [{
+                    text: fullText,
+                    start: 0,
+                    duration: 0
+                }];
+            }
+        } catch (e: any) {
+            const msg = e?.message || String(e);
+            if (isWhisperRateLimited(msg)) {
+                markWhisperCooldown(msg);
+                const remainingSeconds = Math.ceil((whisperBlockedUntil - Date.now()) / 1000);
+                console.warn(`[Veritas] Whisper rate-limited. Cooldown set to ~${remainingSeconds}s.`);
+            }
+            errors.push(`Strategy 3: ${msg}`);
+            console.error("[Veritas] Strategy 3 (audio) failed:", msg);
+        }
     }
 
     // Strategy 4: Video metadata fallback (title + description)
