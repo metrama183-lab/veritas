@@ -43,9 +43,37 @@ const modelLight =
             : openai("gpt-4o");
 
 const MAX_TRANSCRIPT_CHARS = isGroq ? 24000 : 15000;
+const LIGHT_MODEL_TRANSCRIPT_CHARS = 9000;
 const VERIFY_CONCURRENCY = isGroq ? 1 : 3;
 const VERIFY_DELAY_MS = isGroq ? 2000 : 300;
 const MAX_CLAIMS = isGroq ? 10 : 10;
+
+let heavyModelBlockedUntil = 0;
+
+function parseRetryAfterMs(message: string): number | null {
+    const hours = message.match(/(\d+)h/i);
+    const minutes = message.match(/(\d+)m/i);
+    const seconds = message.match(/(\d+(?:\.\d+)?)s/i);
+
+    if (!hours && !minutes && !seconds) return null;
+
+    const totalSeconds =
+        (hours ? Number(hours[1]) * 3600 : 0) +
+        (minutes ? Number(minutes[1]) * 60 : 0) +
+        (seconds ? Number(seconds[1]) : 0);
+
+    return Math.max(0, Math.round(totalSeconds * 1000));
+}
+
+function markHeavyModelBlocked(message: string): void {
+    const retryMs = parseRetryAfterMs(message) ?? 45 * 60 * 1000;
+    const nextUntil = Date.now() + retryMs;
+    heavyModelBlockedUntil = Math.max(heavyModelBlockedUntil, nextUntil);
+}
+
+function isHeavyModelOnCooldown(): boolean {
+    return isGroq && Date.now() < heavyModelBlockedUntil;
+}
 
 // Tavily for web search verification
 const tvly = process.env.TAVILY_API_KEY
@@ -76,6 +104,43 @@ const VerificationSchema = z.object({
     confidence: z.number().min(0).max(1),
     reasoning: z.string(),
 });
+
+const LOW_TRUST_DOMAINS = [
+    "brainly.",
+    "quora.",
+    "reddit.",
+    "wikihow.",
+    "fandom.",
+    "answers.",
+    "forum",
+];
+
+function domainScore(url: string): number {
+    try {
+        const host = new URL(url).hostname.toLowerCase();
+        const isLowTrust = LOW_TRUST_DOMAINS.some((d) => host.includes(d));
+        return isLowTrust ? -1 : 1;
+    } catch {
+        return 0;
+    }
+}
+
+function normalizeVerdictByReasoning(
+    verdict: "True" | "False" | "Unverified",
+    reasoning: string,
+): "True" | "False" | "Unverified" {
+    const r = reasoning.toLowerCase();
+    const looksLikeMissingEvidence =
+        r.includes("no evidence") ||
+        r.includes("no information") ||
+        r.includes("insufficient") ||
+        r.includes("cannot verify") ||
+        r.includes("not directly") ||
+        r.includes("not enough");
+
+    if (looksLikeMissingEvidence) return "Unverified";
+    return verdict;
+}
 
 // ============================================================
 // Manipulation / Propaganda Tactics
@@ -223,10 +288,23 @@ function fixUnescapedQuotes(json: string): string {
 
 async function generateTextWithRetry(
     prompt: string,
-    options?: { model?: Parameters<typeof generateText>[0]["model"]; maxRetries?: number },
+    options?: {
+        model?: Parameters<typeof generateText>[0]["model"];
+        maxRetries?: number;
+        fallbackPrompt?: string;
+    },
 ): Promise<string> {
     const useModel = options?.model ?? modelLight;
-    const maxRetries = options?.maxRetries ?? 3;
+    const fallbackPrompt = options?.fallbackPrompt ?? prompt;
+    const isHeavyRequest = isGroq && useModel === modelHeavy;
+    const maxRetries = options?.maxRetries ?? (isHeavyRequest ? 1 : 3);
+
+    if (isHeavyRequest && isHeavyModelOnCooldown()) {
+        const cooldownSec = Math.ceil((heavyModelBlockedUntil - Date.now()) / 1000);
+        console.log(`[Veritas] Heavy model cooldown active (${cooldownSec}s left). Using light model.`);
+        return generateTextWithRetry(fallbackPrompt, { model: modelLight, maxRetries: 2 });
+    }
+
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
             const { text } = await generateText({ model: useModel, prompt });
@@ -235,7 +313,13 @@ async function generateTextWithRetry(
             const msg = e instanceof Error ? e.message : String(e);
             const isRateLimit = msg.includes("Rate limit") || msg.includes("429") || msg.includes("TPM") || msg.includes("TPD") || msg.includes("tokens per");
 
-            if (isRateLimit && attempt < maxRetries - 1) {
+            if (isRateLimit && isHeavyRequest) {
+                markHeavyModelBlocked(msg);
+                const cooldownSec = Math.ceil((heavyModelBlockedUntil - Date.now()) / 1000);
+                console.log(`[Veritas] Heavy model rate-limited. Cooldown set to ~${cooldownSec}s.`);
+            }
+
+            if (isRateLimit && attempt < maxRetries - 1 && !isHeavyRequest) {
                 // Exponential backoff: 5s, 10s
                 const waitTime = 5000 * Math.pow(2, attempt);
                 console.log(`[Veritas] Rate limited, waiting ${waitTime / 1000}s before retry ${attempt + 2}/${maxRetries}...`);
@@ -247,8 +331,7 @@ async function generateTextWithRetry(
             if (isRateLimit && useModel !== modelLight && isGroq) {
                 console.log(`[Veritas] Heavy model rate-limited, falling back to light model...`);
                 try {
-                    const { text } = await generateText({ model: modelLight, prompt });
-                    return text;
+                    return generateTextWithRetry(fallbackPrompt, { model: modelLight, maxRetries: 2 });
                 } catch (fallbackErr) {
                     console.error("[Veritas] Fallback model also failed:", fallbackErr);
                 }
@@ -280,7 +363,8 @@ async function verifyClaim(
     }
 
     try {
-        const searchResult = await tvly.search(query, {
+        const normalizedQuery = query?.trim() || `${topic} ${claim}`.slice(0, 280);
+        const searchResult = await tvly.search(normalizedQuery, {
             searchDepth: "advanced",
             maxResults: 5,
             topic: "general",
@@ -296,14 +380,20 @@ async function verifyClaim(
             };
         }
 
+        const rankedResults = [...searchResult.results].sort((a, b) => {
+            const trustDiff = domainScore(b.url || "") - domainScore(a.url || "");
+            if (trustDiff !== 0) return trustDiff;
+            return (b.score || 0) - (a.score || 0);
+        });
+
         // Keep context short for Groq
-        const context = searchResult.results
+        const context = rankedResults
             .slice(0, 3)
             .map((r: { title?: string; content?: string }) =>
                 `[${r.title || "Untitled"}]: ${(r.content || "").slice(0, 300)}`
             )
             .join("\n");
-        const sourceUrl = searchResult.results[0]?.url || "Web Search";
+        const sourceUrl = rankedResults[0]?.url || searchResult.results[0]?.url || "Web Search";
         const tavilyAnswer = (searchResult as any).answer || "";
 
         const text = await generateTextWithRetry(
@@ -342,9 +432,11 @@ Return ONLY JSON: {"verdict":"True"|"False"|"Unverified","confidence":0.0-1.0,"r
             reasoning: typeof parsed.reasoning === "string" ? parsed.reasoning : "Validation failed.",
         };
 
+        const normalizedVerdict = normalizeVerdictByReasoning(result.verdict, result.reasoning);
+
         return {
             claim, timestamp,
-            verdict: result.verdict,
+            verdict: normalizedVerdict,
             confidence: result.confidence,
             source: sourceUrl,
             reasoning: result.reasoning,
@@ -617,9 +709,11 @@ CRITICAL: EXTRACT FULL, SELF-CONTAINED SENTENCES.
 Return ONLY compact JSON: {"topic":"Subject","claims":[{"claim":"...","timestamp":"...","query":"..."}]}`;
 
             console.log(`[Veritas] Extracting claims (${mode} mode)...`);
+            const heavyPrompt = `${systemPrompt}\n\nText:\n"${transcriptText.slice(0, MAX_TRANSCRIPT_CHARS)}"`;
+            const lightPrompt = `${systemPrompt}\n\nText:\n"${transcriptText.slice(0, LIGHT_MODEL_TRANSCRIPT_CHARS)}"`;
             const text = await generateTextWithRetry(
-                `${systemPrompt}\n\nText:\n"${transcriptText.slice(0, MAX_TRANSCRIPT_CHARS)}"`,
-                { model: modelHeavy },
+                heavyPrompt,
+                { model: modelHeavy, maxRetries: 1, fallbackPrompt: lightPrompt },
             );
             console.log(`[Veritas DEBUG] ${mode.toUpperCase()} Output:`, text.slice(0, 100) + "...");
             return { text, data: extractJSON(text) };
@@ -655,16 +749,30 @@ Return ONLY compact JSON: {"topic":"Subject","claims":[{"claim":"...","timestamp
             });
         }
 
+        const topic = (typeof extracted.topic === "string" ? extracted.topic : "General") || "General";
+
         // Handle case where claims array exists but might be incomplete
         const rawClaims = Array.isArray(extracted.claims) ? extracted.claims : [];
         const claims: ExtractedClaim[] = rawClaims
-            .filter((c: unknown): c is ExtractedClaim => {
+            .filter((c: unknown): c is Record<string, unknown> => {
                 const obj = c as Record<string, unknown>;
                 return typeof obj === "object" && obj !== null && typeof obj.claim === "string" && obj.claim.length > 5;
             })
+            .map((obj) => {
+                const claimText = String(obj.claim || "").trim();
+                const queryText = typeof obj.query === "string" && obj.query.trim().length > 0
+                    ? obj.query.trim()
+                    : `${topic} ${claimText}`.slice(0, 280);
+                const timestampText = typeof obj.timestamp === "string" && obj.timestamp.trim().length > 0
+                    ? obj.timestamp.trim()
+                    : "Unknown";
+                return {
+                    claim: claimText,
+                    timestamp: timestampText,
+                    query: queryText,
+                };
+            })
             .slice(0, MAX_CLAIMS); // Cap claims to avoid rate limit hell
-
-        const topic = (typeof extracted.topic === "string" ? extracted.topic : "General") || "General";
 
         console.log(`[Veritas] Extracted ${claims.length} claims for topic: "${topic}"`);
 
