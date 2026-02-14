@@ -8,6 +8,22 @@ export interface TranscriptSegment {
     duration: number;
 }
 
+const STRATEGY1_TIMEOUT_MS = 30000;
+const STRATEGY2_TIMEOUT_MS = 20000;
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    });
+
+    try {
+        return await Promise.race([promise, timeoutPromise]);
+    } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+    }
+}
+
 let whisperBlockedUntil = 0;
 
 function parseRetryAfterMs(message: string): number | null {
@@ -45,12 +61,17 @@ function isWhisperOnCooldown(): boolean {
 export async function getTranscript(url: string): Promise<TranscriptSegment[]> {
     const videoId = extractVideoId(url);
     if (!videoId) throw new Error("Cannot extract video ID from URL");
+    const canonicalUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
     const errors: string[] = [];
 
     // Strategy 1: youtube-transcript library (fast, no dependencies)
     try {
-        const transcript = await YoutubeTranscript.fetchTranscript(url);
+        const transcript = await withTimeout(
+            YoutubeTranscript.fetchTranscript(canonicalUrl),
+            STRATEGY1_TIMEOUT_MS,
+            "Strategy 1",
+        );
         if (transcript && transcript.length > 0) {
             console.log(`[Veritas] Strategy 1 (youtube-transcript): ${transcript.length} segments`);
             return transcript.map(item => ({
@@ -59,6 +80,7 @@ export async function getTranscript(url: string): Promise<TranscriptSegment[]> {
                 duration: item.duration / 1000
             }));
         }
+        errors.push("Strategy 1: returned empty transcript");
     } catch (e: any) {
         const msg = e?.message || String(e);
         errors.push(`Strategy 1: ${msg}`);
@@ -68,11 +90,16 @@ export async function getTranscript(url: string): Promise<TranscriptSegment[]> {
     // Strategy 2: Custom Scraper (parses YouTube page HTML directly)
     try {
         const { fetchTranscriptCustom } = await import("./youtube-custom");
-        const transcript = await fetchTranscriptCustom(videoId);
+        const transcript = await withTimeout(
+            fetchTranscriptCustom(videoId),
+            STRATEGY2_TIMEOUT_MS,
+            "Strategy 2",
+        );
         if (transcript && transcript.length > 0) {
             console.log(`[Veritas] Strategy 2 (custom scraper): ${transcript.length} segments`);
             return transcript;
         }
+        errors.push("Strategy 2: returned empty transcript");
     } catch (e: any) {
         const msg = e?.message || String(e);
         errors.push(`Strategy 2: ${msg}`);
@@ -89,7 +116,7 @@ export async function getTranscript(url: string): Promise<TranscriptSegment[]> {
         try {
             console.log("[Veritas] Attempting Strategy 3: Audio download + Whisper transcription...");
             const { getAudioTranscript } = await import("./audio-transcription");
-            const fullText = await getAudioTranscript(url, videoId);
+            const fullText = await getAudioTranscript(canonicalUrl, videoId);
 
             if (fullText && fullText.trim().length > 0) {
                 console.log(`[Veritas] Strategy 3 (audio): ${fullText.length} chars transcribed`);
@@ -116,7 +143,7 @@ export async function getTranscript(url: string): Promise<TranscriptSegment[]> {
     try {
         console.log("[Veritas] Attempting Strategy 4: Metadata fallback...");
         const { getVideoMetadataFallbackText } = await import("./audio-transcription");
-        const metadataText = await getVideoMetadataFallbackText(url);
+        const metadataText = await getVideoMetadataFallbackText(canonicalUrl);
 
         if (metadataText && metadataText.trim().length > 0) {
             console.log(`[Veritas] Strategy 4 (metadata): ${metadataText.length} chars`);

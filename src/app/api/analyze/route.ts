@@ -49,6 +49,7 @@ const VERIFY_DELAY_MS = isGroq ? 2000 : 300;
 const MAX_CLAIMS = isGroq ? 10 : 10;
 
 let heavyModelBlockedUntil = 0;
+let tavilyBlockedUntil = 0;
 
 function parseRetryAfterMs(message: string): number | null {
     const hours = message.match(/(\d+)h/i);
@@ -73,6 +74,28 @@ function markHeavyModelBlocked(message: string): void {
 
 function isHeavyModelOnCooldown(): boolean {
     return isGroq && Date.now() < heavyModelBlockedUntil;
+}
+
+function isTavilyOnCooldown(): boolean {
+    return Date.now() < tavilyBlockedUntil;
+}
+
+function isTavilyQuotaError(message: string): boolean {
+    const lower = message.toLowerCase();
+    return (
+        lower.includes("tavily") &&
+        (
+            lower.includes("usage limit") ||
+            lower.includes("plan") ||
+            lower.includes("quota") ||
+            lower.includes("429")
+        )
+    );
+}
+
+function markTavilyBlocked(message: string): void {
+    const retryMs = parseRetryAfterMs(message) ?? 60 * 60 * 1000;
+    tavilyBlockedUntil = Math.max(tavilyBlockedUntil, Date.now() + retryMs);
 }
 
 // Tavily for web search verification
@@ -384,13 +407,68 @@ async function verifyClaim(
     timestamp: string,
     topic: string,
 ): Promise<VerifiedClaim> {
+    const verifyWithModelOnly = async (reasonPrefix: string): Promise<VerifiedClaim> => {
+        try {
+            const text = await generateTextWithRetry(
+                `Fact-check this claim using general world knowledge only.
+No web search is available for this request.
+
+Claim: "${claim}"
+Topic: "${topic}"
+Date: ${new Date().toISOString().split("T")[0]}
+
+Rules:
+- If you are not reasonably sure, return "Unverified"
+- Keep reasoning concise (1 sentence)
+
+Return ONLY JSON: {"verdict":"True"|"False"|"Unverified","confidence":0.0-1.0,"reasoning":"..."}`,
+                { model: modelLight, maxRetries: 1 },
+            );
+
+            const parsed = extractJSON(text);
+            if (!parsed) {
+                return {
+                    claim, timestamp,
+                    verdict: "Unverified", confidence: 0,
+                    source: "Model-only fallback",
+                    reasoning: `${reasonPrefix} Fallback verification response was malformed.`,
+                };
+            }
+
+            const validated = VerificationSchema.safeParse(parsed);
+            const result = validated.success ? validated.data : {
+                verdict: (parsed.verdict as "True" | "False" | "Unverified") || "Unverified",
+                confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0,
+                reasoning: typeof parsed.reasoning === "string" ? parsed.reasoning : "Validation failed.",
+            };
+
+            const normalizedVerdict = normalizeVerdictByReasoning(result.verdict, result.reasoning);
+
+            return {
+                claim,
+                timestamp,
+                verdict: normalizedVerdict,
+                confidence: Math.min(0.75, Math.max(0, result.confidence)),
+                source: "Model-only fallback",
+                reasoning: `${reasonPrefix} ${result.reasoning}`.trim(),
+            };
+        } catch {
+            return {
+                claim, timestamp,
+                verdict: "Unverified", confidence: 0,
+                source: "Model-only fallback",
+                reasoning: `${reasonPrefix} Fallback verification failed.`,
+            };
+        }
+    };
+
     if (!tvly) {
-        return {
-            claim, timestamp,
-            verdict: "Unverified", confidence: 0,
-            source: "No search API key configured",
-            reasoning: "Tavily API key not set — cannot perform web search.",
-        };
+        return verifyWithModelOnly("Search API key not configured.");
+    }
+
+    if (isTavilyOnCooldown()) {
+        const seconds = Math.ceil((tavilyBlockedUntil - Date.now()) / 1000);
+        return verifyWithModelOnly(`Search provider temporarily unavailable (cooldown ${seconds}s).`);
     }
 
     try {
@@ -403,12 +481,7 @@ async function verifyClaim(
         });
 
         if (!searchResult.results || searchResult.results.length === 0) {
-            return {
-                claim, timestamp,
-                verdict: "Unverified", confidence: 0.2,
-                source: "No search results",
-                reasoning: "Web search returned no relevant results for this claim.",
-            };
+            return verifyWithModelOnly("Search returned no relevant results.");
         }
 
         const rankedResults = [...searchResult.results].sort((a, b) => {
@@ -474,13 +547,15 @@ Return ONLY JSON: {"verdict":"True"|"False"|"Unverified","confidence":0.0-1.0,"r
         };
     } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
+        if (isTavilyQuotaError(msg)) {
+            markTavilyBlocked(msg);
+            const seconds = Math.ceil((tavilyBlockedUntil - Date.now()) / 1000);
+            console.warn(`[Veritas] Tavily quota/cap reached. Cooldown set to ~${seconds}s.`);
+            return verifyWithModelOnly("Search provider quota exceeded.");
+        }
+
         console.error(`Verification failed for claim: "${claim.slice(0, 60)}..."`, msg);
-        return {
-            claim, timestamp,
-            verdict: "Unverified", confidence: 0,
-            source: "Error",
-            reasoning: `Verification error: ${msg.slice(0, 100)}`,
-        };
+        return verifyWithModelOnly(`Search provider error: ${msg.slice(0, 90)}.`);
     }
 }
 
