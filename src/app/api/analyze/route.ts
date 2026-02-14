@@ -420,6 +420,7 @@ Date: ${new Date().toISOString().split("T")[0]}
 Rules:
 - If you are not reasonably sure, return "Unverified"
 - Keep reasoning concise (1 sentence)
+- Write reasoning in English only
 
 Return ONLY JSON: {"verdict":"True"|"False"|"Unverified","confidence":0.0-1.0,"reasoning":"..."}`,
                 { model: modelLight, maxRetries: 1 },
@@ -515,6 +516,7 @@ Rules:
 - If sources CONTRADICT with different data → "False"  
 - If sources are irrelevant or don't mention it → "Unverified"
 - Reasoning: 1 sentence max.
+- Write reasoning in English only.
 
 Return ONLY JSON: {"verdict":"True"|"False"|"Unverified","confidence":0.0-1.0,"reasoning":"..."}`,
         );
@@ -621,6 +623,7 @@ Transcript (excerpt):
 For EACH of these 8 tactics, rate how intensely it is used (0 = not present, 100 = heavily used).
 If the tactic IS present, provide a SHORT quote from the text as example and a 1-sentence explanation.
 If the tactic is NOT present (score 0), leave example and explanation empty.
+IMPORTANT: All output text fields must be in English. If the source transcript is not English, translate examples and explanations to concise English.
 
 Tactics to analyze:
 1. Appeal to Emotion — Using fear, anger, sympathy, or outrage to bypass rational thinking
@@ -653,6 +656,7 @@ Rules:
 - Output JSON only
 - Keep all 8 tactics if present, otherwise include with score 0
 - score and manipulationScore must be numbers 0-100
+- Keep all text fields in English
 
 Output to repair:
 ${text.slice(0, 3500)}`,
@@ -712,7 +716,7 @@ async function generateSummary(
 
     try {
         const text = await generateTextWithRetry(
-            `Write 2 sentences summarizing this fact-check. Be direct. Use same language as the topic.
+            `Write 2 sentences summarizing this fact-check in English. Be direct.
 
 Topic: "${topic}"
 Results: ${trueCount} true, ${falseCount} false, ${unverifiedCount} unverified (${claims.length} total).
@@ -822,6 +826,10 @@ IGNORE ABSOLUTELY (unless topic is Health):
 - Anecdotes / Feelings
 - Generalizations
 
+LANGUAGE REQUIREMENT:
+- Output topic, claim, and query in English only
+- If the source text is not English, translate extracted claims into clear English
+
 Return ONLY compact JSON: {"topic":"Subject","claims":[{"claim":"...","timestamp":"...","query":"..."}]}`
                 : `You are a fact-checker. Extract ANY verifiable claims, including personal timeline events.
 Target: ${MAX_CLAIMS} claims.
@@ -832,6 +840,10 @@ EXTRACT:
 - Quotes or accusations
 
 CRITICAL: EXTRACT FULL, SELF-CONTAINED SENTENCES.
+
+LANGUAGE REQUIREMENT:
+- Output topic, claim, and query in English only
+- If the source text is not English, translate extracted claims into clear English
 
 Return ONLY compact JSON: {"topic":"Subject","claims":[{"claim":"...","timestamp":"...","query":"..."}]}`;
 
