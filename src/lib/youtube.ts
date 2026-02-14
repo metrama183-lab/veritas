@@ -65,6 +65,29 @@ export async function getTranscript(url: string): Promise<TranscriptSegment[]> {
         console.error("[Veritas] Strategy 3 (audio) failed:", msg);
     }
 
+    // Strategy 4: Video metadata fallback (title + description)
+    // This keeps the pipeline alive even when captions are unavailable and audio extraction fails.
+    try {
+        console.log("[Veritas] Attempting Strategy 4: Metadata fallback...");
+        const { getVideoMetadataFallbackText } = await import("./audio-transcription");
+        const metadataText = await getVideoMetadataFallbackText(url);
+
+        if (metadataText && metadataText.trim().length > 0) {
+            console.log(`[Veritas] Strategy 4 (metadata): ${metadataText.length} chars`);
+            return [{
+                text: metadataText,
+                start: 0,
+                duration: 0,
+            }];
+        }
+
+        errors.push("Strategy 4: Metadata fallback returned empty content");
+    } catch (e: any) {
+        const msg = e?.message || String(e);
+        errors.push(`Strategy 4: ${msg}`);
+        console.error("[Veritas] Strategy 4 (metadata) failed:", msg);
+    }
+
     // FINAL FALLBACK: If everything fails, throw a specific error
     // DO NOT use dummy data logic here anymore as it confuses users (e.g. showing AI text for a Venezuela video)
     const errSummary = errors.join("\n");

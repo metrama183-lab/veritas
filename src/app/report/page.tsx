@@ -97,8 +97,20 @@ function ReportPageContent() {
                 if (res.status === 422) {
                     // Check if it's specifically a transcript failure
                     if (data.error === "TRANSCRIPT_FAILED" || data.details?.includes("TRANSCRIPT_FAILED")) {
-                        setLoading(false);
-                        setError("⚠️ Transcript unavailable. This video has no captions and audio download failed. Please try 'Manual Text' mode.");
+                        setResult({
+                            url: data.url || (mode === "text" ? null : decodeURIComponent(videoUrl!)),
+                            topic: data.topic || "Transcript Unavailable",
+                            summary: data.summary || "No transcript could be extracted for this video.",
+                            truthScore: data.truthScore ?? 0,
+                            claims: data.claims || [],
+                            manipulation: data.manipulation || undefined,
+                            meta: data.meta || {
+                                totalClaims: 0,
+                                trueCount: 0,
+                                falseCount: 0,
+                                unverifiedCount: 0,
+                            },
+                        });
                         return;
                     }
                     // Other 422 errors (e.g. empty transcript)

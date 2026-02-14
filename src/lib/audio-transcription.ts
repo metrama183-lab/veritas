@@ -13,61 +13,79 @@ const groq = new OpenAI({
 });
 
 const TEMP_DIR = path.join(process.cwd(), 'tmp');
+const MAX_AUDIO_SIZE = 25 * 1024 * 1024; // Groq Whisper limit: 25MB
+const YTDLP_TIMEOUT_MS = 90000;
+const YTDLP_MAX_BUFFER = 15 * 1024 * 1024;
 
 // Ensure temp directory exists
 if (!fs.existsSync(TEMP_DIR)) {
     fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
 
-export async function downloadAudio(url: string, videoId: string): Promise<string> {
-    const outputTemplate = path.join(TEMP_DIR, `${videoId}.%(ext)s`);
-    // Hardcoded absolute path to the binary to bypass Next.js environment issues
-    const binaryPath = path.join(process.cwd(), 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp');
-
-    // Command construction
-    // We use the binary directy via exec
-    // Use --no-part to avoid the .part -> .final rename issue
-    // Use --force-overwrites to ensure we don't get stuck on existing files
-    const command = `"${binaryPath}" "${url}" --format bestaudio --output "${outputTemplate}" --no-check-certificates --no-warnings --prefer-free-formats --no-part --force-overwrites`;
-
-    console.log(`Downloading audio for ${videoId} using direct exec (v2 - no-part)...`);
-
-    try {
-        const { stdout, stderr } = await execPromise(command, { timeout: 60000 });
-        if (stderr) console.warn(`yt-dlp stderr: ${stderr}`);
-        console.log(`yt-dlp stdout: ${stdout}`);
-    } catch (e: any) {
-        // If the error contains stdout/stderr, log it
-        const errorDetails = `Error: ${e.message}\nStdout: ${e.stdout}\nStderr: ${e.stderr}`;
-        console.error("yt-dlp execution details:", errorDetails);
-        throw new Error(`yt-dlp execution failed: ${errorDetails}`);
-    }
-
-    // Clean up stale files for this videoId, then find the new one
-    const files = fs.readdirSync(TEMP_DIR);
-    const downloadedFile = files
-        .filter(f => f.startsWith(videoId))
+function findLatestDownloadedFile(runPrefix: string): string | null {
+    const files = fs.readdirSync(TEMP_DIR)
+        .filter((f) => f.startsWith(runPrefix))
         .sort((a, b) => {
             const sa = fs.statSync(path.join(TEMP_DIR, a)).mtimeMs;
             const sb = fs.statSync(path.join(TEMP_DIR, b)).mtimeMs;
-            return sb - sa; // newest first
-        })[0];
+            return sb - sa;
+        });
 
-    if (!downloadedFile) {
-        throw new Error("Audio download failed: File not found in " + TEMP_DIR);
+    return files[0] ? path.join(TEMP_DIR, files[0]) : null;
+}
+
+export async function downloadAudio(url: string, videoId: string): Promise<string> {
+    // Use a unique prefix so parallel requests for the same video do not overwrite each other.
+    const runPrefix = `${videoId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const outputTemplate = path.join(TEMP_DIR, `${runPrefix}.%(ext)s`);
+    // Hardcoded absolute path to the binary to bypass Next.js environment issues
+    const binaryPath = path.join(process.cwd(), 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp');
+
+    // Try progressively smaller audio formats to stay under Whisper's 25MB limit.
+    const formatAttempts = [
+        "bestaudio[abr<=64]/bestaudio[abr<=96]/bestaudio/best",
+        "worstaudio/worst",
+        "bestaudio/best",
+    ];
+
+    const attemptErrors: string[] = [];
+
+    for (let i = 0; i < formatAttempts.length; i++) {
+        const format = formatAttempts[i];
+        const command = `"${binaryPath}" "${url}" --format "${format}" --output "${outputTemplate}" --no-check-certificates --no-warnings --prefer-free-formats --no-part --force-overwrites --no-playlist --print "after_move:filepath"`;
+
+        console.log(`Downloading audio for ${videoId} (attempt ${i + 1}/${formatAttempts.length}, format: ${format})...`);
+
+        try {
+            const { stdout, stderr } = await execPromise(command, {
+                timeout: YTDLP_TIMEOUT_MS,
+                maxBuffer: YTDLP_MAX_BUFFER,
+            });
+            if (stderr) console.warn(`yt-dlp stderr: ${stderr}`);
+            if (stdout) console.log(`yt-dlp stdout: ${stdout}`);
+
+            const filePath = findLatestDownloadedFile(runPrefix);
+            if (!filePath) {
+                attemptErrors.push(`Attempt ${i + 1}: Download completed but no file found in ${TEMP_DIR}`);
+                continue;
+            }
+
+            const fileSize = fs.statSync(filePath).size;
+            if (fileSize > MAX_AUDIO_SIZE) {
+                fs.unlinkSync(filePath);
+                attemptErrors.push(`Attempt ${i + 1}: Audio too large (${(fileSize / 1024 / 1024).toFixed(1)}MB > 25MB)`);
+                continue;
+            }
+
+            return filePath;
+        } catch (e: any) {
+            const errorDetails = `Error: ${e?.message || "unknown"}\nStdout: ${e?.stdout || ""}\nStderr: ${e?.stderr || ""}`;
+            console.error("yt-dlp execution details:", errorDetails);
+            attemptErrors.push(`Attempt ${i + 1}: ${e?.message || "yt-dlp failed"}`);
+        }
     }
 
-    const filePath = path.join(TEMP_DIR, downloadedFile);
-
-    // Check file size — Groq Whisper limit is 25MB
-    const MAX_AUDIO_SIZE = 25 * 1024 * 1024;
-    const fileSize = fs.statSync(filePath).size;
-    if (fileSize > MAX_AUDIO_SIZE) {
-        fs.unlinkSync(filePath);
-        throw new Error(`Audio file too large (${(fileSize / 1024 / 1024).toFixed(1)}MB). Groq Whisper limit is 25MB.`);
-    }
-
-    return filePath;
+    throw new Error(`Audio download failed after ${formatAttempts.length} attempts. ${attemptErrors.join(" | ")}`);
 }
 
 export async function transcribeAudio(filePath: string): Promise<string> {
@@ -107,5 +125,42 @@ export async function getAudioTranscript(url: string, videoId: string): Promise<
         fs.writeFileSync(path.join(process.cwd(), 'debug_error.log'), `Audio Pipeline Error: ${errorMsg}\n`);
         console.error("Audio Pipeline Failed:", error);
         throw new Error(`Audio Pipeline Error: ${error.message || errorMsg}`);
+    }
+}
+
+export async function getVideoMetadataFallbackText(url: string): Promise<string | null> {
+    const binaryPath = path.join(process.cwd(), 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp');
+    const command = `"${binaryPath}" "${url}" --dump-single-json --skip-download --no-warnings --no-check-certificates --no-playlist`;
+
+    try {
+        const { stdout } = await execPromise(command, {
+            timeout: 45000,
+            maxBuffer: 8 * 1024 * 1024,
+        });
+
+        const metadata = JSON.parse(stdout);
+        const title = typeof metadata.title === 'string' ? metadata.title.trim() : '';
+        const uploader = typeof metadata.uploader === 'string' ? metadata.uploader.trim() : '';
+        const description = typeof metadata.description === 'string' ? metadata.description.trim() : '';
+        const categories = Array.isArray(metadata.categories) ? metadata.categories.join(', ') : '';
+
+        const metaText = [
+            title ? `Video title: ${title}.` : '',
+            uploader ? `Channel: ${uploader}.` : '',
+            categories ? `Categories: ${categories}.` : '',
+            description ? `Description: ${description.slice(0, 6000)}` : '',
+        ]
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+
+        if (metaText.length < 80) {
+            return null;
+        }
+
+        return metaText;
+    } catch (error) {
+        console.error('Metadata fallback failed:', error);
+        return null;
     }
 }

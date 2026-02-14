@@ -539,6 +539,21 @@ export async function POST(req: NextRequest) {
         // ── Step 1: Get transcript ───────────────────────────────
         let transcriptText = "";
 
+        const transcriptUnavailableResponse = (details?: string) => NextResponse.json({
+            url: url || null,
+            topic: "Transcript Unavailable",
+            summary: "We could not retrieve captions or audio transcript for this video, so no claims were extracted.",
+            truthScore: 0,
+            claims: [],
+            manipulation: {
+                tactics: TACTICS.map((tactic) => ({ tactic, score: 0, example: "", explanation: "" })),
+                manipulationScore: 0,
+                summary: "No transcript available for manipulation analysis.",
+            },
+            meta: { totalClaims: 0, trueCount: 0, falseCount: 0, unverifiedCount: 0 },
+            details,
+        });
+
         if (text) {
             transcriptText = text;
         } else if (url) {
@@ -549,14 +564,14 @@ export async function POST(req: NextRequest) {
             } catch (e: unknown) {
                 const msg = e instanceof Error ? e.message : String(e);
                 console.error("[Veritas] Transcript fetch failed:", msg);
-                return NextResponse.json(
-                    { error: "TRANSCRIPT_FAILED", details: msg },
-                    { status: 422 },
-                );
+                return transcriptUnavailableResponse(msg);
             }
         }
 
         if (!transcriptText.trim()) {
+            if (url) {
+                return transcriptUnavailableResponse("Transcript text ended up empty after fallback strategies.");
+            }
             return NextResponse.json(
                 { error: "Empty transcript — no content to analyze." },
                 { status: 422 },
