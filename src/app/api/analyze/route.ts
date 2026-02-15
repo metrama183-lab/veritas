@@ -5,6 +5,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { generateText } from "ai";
 import { z } from "zod";
 import { tavily } from "@tavily/core";
+import { DEMO_VIDEO_ID, DEMO_RESPONSE } from "@/lib/demo-cache";
 
 // ============================================================
 // Provider Setup
@@ -744,6 +745,16 @@ export async function POST(req: NextRequest) {
                 { error: "URL or text content required" },
                 { status: 400 },
             );
+        }
+
+        // ── Demo cache: serve pre-built response for the demo video ──
+        if (url) {
+            const { extractVideoId } = await import("@/lib/utils");
+            const vid = extractVideoId(url);
+            if (vid === DEMO_VIDEO_ID) {
+                console.log(`[Veritas] Demo cache hit for ${DEMO_VIDEO_ID}`);
+                return NextResponse.json(DEMO_RESPONSE);
+            }
         }
 
         // Check AI key
