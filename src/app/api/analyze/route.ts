@@ -43,7 +43,7 @@ const modelLight =
             : openai("gpt-4o");
 
 const MAX_TRANSCRIPT_CHARS = isGroq ? 24000 : 15000;
-const LIGHT_MODEL_TRANSCRIPT_CHARS = 9000;
+const LIGHT_MODEL_TRANSCRIPT_CHARS = 16000;
 const VERIFY_CONCURRENCY = isGroq ? 1 : 3;
 const VERIFY_DELAY_MS = isGroq ? 2000 : 300;
 const MAX_CLAIMS = isGroq ? 10 : 10;
@@ -67,7 +67,7 @@ function parseRetryAfterMs(message: string): number | null {
 }
 
 function markHeavyModelBlocked(message: string): void {
-    const retryMs = parseRetryAfterMs(message) ?? 45 * 60 * 1000;
+    const retryMs = parseRetryAfterMs(message) ?? 10 * 60 * 1000;
     const nextUntil = Date.now() + retryMs;
     heavyModelBlockedUntil = Math.max(heavyModelBlockedUntil, nextUntil);
 }
@@ -94,7 +94,7 @@ function isTavilyQuotaError(message: string): boolean {
 }
 
 function markTavilyBlocked(message: string): void {
-    const retryMs = parseRetryAfterMs(message) ?? 60 * 60 * 1000;
+    const retryMs = parseRetryAfterMs(message) ?? 15 * 60 * 1000;
     tavilyBlockedUntil = Math.max(tavilyBlockedUntil, Date.now() + retryMs);
 }
 

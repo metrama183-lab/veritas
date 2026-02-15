@@ -106,6 +106,30 @@ export async function getTranscript(url: string): Promise<TranscriptSegment[]> {
         console.warn("[Veritas] Strategy 2 failed:", msg);
     }
 
+    // Strategy 2.5: yt-dlp subtitle extraction (handles YouTube auth/cookies automatically)
+    try {
+        console.log("[Veritas] Attempting Strategy 2.5: yt-dlp subtitle extraction...");
+        const { extractSubtitlesWithYtdlp } = await import("./audio-transcription");
+        const subs = await withTimeout(
+            extractSubtitlesWithYtdlp(canonicalUrl, videoId),
+            60000,
+            "Strategy 2.5",
+        );
+        if (subs && subs.trim().length > 100) {
+            console.log(`[Veritas] Strategy 2.5 (yt-dlp subs): ${subs.length} chars`);
+            return [{
+                text: subs,
+                start: 0,
+                duration: 0,
+            }];
+        }
+        errors.push("Strategy 2.5: yt-dlp returned empty subtitles");
+    } catch (e: any) {
+        const msg = e?.message || String(e);
+        errors.push(`Strategy 2.5: ${msg}`);
+        console.warn("[Veritas] Strategy 2.5 failed:", msg);
+    }
+
     // Strategy 3: Audio Download + Groq Whisper (nuclear option for videos without captions)
     if (isWhisperOnCooldown()) {
         const remainingSeconds = Math.ceil((whisperBlockedUntil - Date.now()) / 1000);

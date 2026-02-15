@@ -128,6 +128,54 @@ export async function getAudioTranscript(url: string, videoId: string): Promise<
     }
 }
 
+export async function extractSubtitlesWithYtdlp(url: string, videoId: string): Promise<string> {
+    const binaryPath = path.join(process.cwd(), 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp');
+    const runPrefix = `subs-${videoId}-${Date.now()}`;
+    const outPath = path.join(TEMP_DIR, runPrefix);
+
+    // Try auto-generated subs first (most videos have them), then manual subs
+    const attempts = [
+        `"${binaryPath}" "${url}" --write-auto-subs --sub-lang "en" --skip-download --sub-format "vtt/srt/best" --convert-subs "srt" --output "${outPath}" --no-check-certificates --no-warnings --no-playlist`,
+        `"${binaryPath}" "${url}" --write-subs --sub-lang "en" --skip-download --sub-format "vtt/srt/best" --convert-subs "srt" --output "${outPath}" --no-check-certificates --no-warnings --no-playlist`,
+    ];
+
+    for (const command of attempts) {
+        try {
+            await execPromise(command, { timeout: 45000, maxBuffer: YTDLP_MAX_BUFFER });
+
+            // Find the generated subtitle file
+            const subFiles = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(runPrefix) && (f.endsWith('.srt') || f.endsWith('.vtt')));
+            if (subFiles.length === 0) continue;
+
+            const subFile = path.join(TEMP_DIR, subFiles[0]);
+            const raw = fs.readFileSync(subFile, 'utf-8');
+
+            // Clean up temp file
+            for (const f of subFiles) {
+                try { fs.unlinkSync(path.join(TEMP_DIR, f)); } catch { /* ignore */ }
+            }
+
+            // Parse SRT: strip sequence numbers, timestamps, and tags
+            const text = raw
+                .replace(/^\d+\s*$/gm, '')
+                .replace(/\d{2}:\d{2}:\d{2}[.,]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[.,]\d{3}/g, '')
+                .replace(/<[^>]+>/g, '')
+                .replace(/\{[^}]+\}/g, '')
+                .replace(/\n{2,}/g, '\n')
+                .split('\n')
+                .map(l => l.trim())
+                .filter(Boolean)
+                .join(' ')
+                .replace(/\s{2,}/g, ' ')
+                .trim();
+
+            if (text.length > 100) return text;
+        } catch { /* try next attempt */ }
+    }
+
+    throw new Error("yt-dlp subtitle extraction returned no usable subtitles");
+}
+
 export async function getVideoMetadataFallbackText(url: string): Promise<string | null> {
     const binaryPath = path.join(process.cwd(), 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp');
     const command = `"${binaryPath}" "${url}" --dump-single-json --skip-download --no-warnings --no-check-certificates --no-playlist`;
