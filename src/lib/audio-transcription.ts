@@ -78,10 +78,11 @@ export async function downloadAudio(url: string, videoId: string): Promise<strin
             }
 
             return filePath;
-        } catch (e: any) {
-            const errorDetails = `Error: ${e?.message || "unknown"}\nStdout: ${e?.stdout || ""}\nStderr: ${e?.stderr || ""}`;
+        } catch (e: unknown) {
+            const err = e as { message?: string; stdout?: string; stderr?: string };
+            const errorDetails = `Error: ${err.message || "unknown"}\nStdout: ${err.stdout || ""}\nStderr: ${err.stderr || ""}`;
             console.error("yt-dlp execution details:", errorDetails);
-            attemptErrors.push(`Attempt ${i + 1}: ${e?.message || "yt-dlp failed"}`);
+            attemptErrors.push(`Attempt ${i + 1}: ${err.message || "yt-dlp failed"}`);
         }
     }
 
@@ -101,7 +102,8 @@ export async function transcribeAudio(filePath: string): Promise<string> {
 
         // OpenAI SDK may return string or object depending on version
         if (typeof transcription === "string") return transcription;
-        if (typeof (transcription as any).text === "string") return (transcription as any).text;
+        const result = transcription as { text?: string };
+        if (typeof result.text === "string") return result.text;
         return JSON.stringify(transcription);
     } catch (error) {
         console.error("Groq Transcription failed:", error);
@@ -120,11 +122,12 @@ export async function getAudioTranscript(url: string, videoId: string): Promise<
         const audioPath = await downloadAudio(url, videoId);
         const transcript = await transcribeAudio(audioPath);
         return transcript;
-    } catch (error: any) {
-        const errorMsg = JSON.stringify(error, Object.getOwnPropertyNames(error));
+    } catch (error: unknown) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        const errorMsg = JSON.stringify(err, Object.getOwnPropertyNames(err));
         fs.writeFileSync(path.join(process.cwd(), 'debug_error.log'), `Audio Pipeline Error: ${errorMsg}\n`);
-        console.error("Audio Pipeline Failed:", error);
-        throw new Error(`Audio Pipeline Error: ${error.message || errorMsg}`);
+        console.error("Audio Pipeline Failed:", err);
+        throw new Error(`Audio Pipeline Error: ${err.message || errorMsg}`);
     }
 }
 

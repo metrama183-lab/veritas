@@ -86,9 +86,9 @@ export async function fetchTranscriptCustom(videoId: string) {
 
         // Prefer manual English, then any English, then Italian, then first available
         const sortedTracks = [
-            ...captionTracks.filter((t: any) => t.languageCode === "en" && t.kind !== "asr"),
-            ...captionTracks.filter((t: any) => t.languageCode === "en" && t.kind === "asr"),
-            ...captionTracks.filter((t: any) => t.languageCode !== "en"),
+            ...captionTracks.filter((t: { languageCode: string; kind?: string }) => t.languageCode === "en" && t.kind !== "asr"),
+            ...captionTracks.filter((t: { languageCode: string; kind?: string }) => t.languageCode === "en" && t.kind === "asr"),
+            ...captionTracks.filter((t: { languageCode: string }) => t.languageCode !== "en"),
         ];
 
         const fetchHeaders: Record<string, string> = {

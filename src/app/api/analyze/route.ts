@@ -500,7 +500,7 @@ Return ONLY JSON: {"verdict":"True"|"False"|"Unverified","confidence":0.0-1.0,"r
             )
             .join("\n");
         const sourceUrl = rankedResults[0]?.url || searchResult.results[0]?.url || "Web Search";
-        const tavilyAnswer = (searchResult as any).answer || "";
+        const tavilyAnswer = (searchResult as { answer?: string }).answer || "";
 
         const text = await generateTextWithRetry(
             `Fact-check this claim using the search results and AI summary below.
@@ -522,7 +522,7 @@ Rules:
 Return ONLY JSON: {"verdict":"True"|"False"|"Unverified","confidence":0.0-1.0,"reasoning":"..."}`,
         );
 
-        let parsed = extractJSON(text);
+        const parsed = extractJSON(text);
         if (!parsed) {
             return {
                 claim, timestamp,

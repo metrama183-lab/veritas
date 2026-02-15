@@ -14,7 +14,8 @@ const TRIVIA = [
     { fact: "True: Wombat poop is cube-shaped to stop it from rolling away.", status: "Analyzing Geometry..." }
 ];
 
-export function LoadingScreen({ mode }: { mode: "video" | "text" }) {
+export function LoadingScreen({ mode: _mode }: { mode: "video" | "text" }) {
+    void _mode; // Prop reserved for future use
     const [progress, setProgress] = useState(0);
     const [triviaIndex, setTriviaIndex] = useState(0);
 
@@ -91,7 +92,7 @@ export function LoadingScreen({ mode }: { mode: "video" | "text" }) {
                             While you wait...
                         </h4>
                         <p className="text-zinc-300 text-sm leading-relaxed italic">
-                            "{TRIVIA[triviaIndex].fact}"
+                            &ldquo;{TRIVIA[triviaIndex].fact}&rdquo;
                         </p>
                     </motion.div>
                 </AnimatePresence>

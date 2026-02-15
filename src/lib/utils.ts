@@ -25,7 +25,7 @@ export function extractVideoId(url: string): string | null {
     }
 
     return null;
-  } catch (e) {
+  } catch {
     return null;
   }
 }

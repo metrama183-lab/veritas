@@ -81,8 +81,8 @@ export async function getTranscript(url: string): Promise<TranscriptSegment[]> {
             }));
         }
         errors.push("Strategy 1: returned empty transcript");
-    } catch (e: any) {
-        const msg = e?.message || String(e);
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
         errors.push(`Strategy 1: ${msg}`);
         console.warn("[Veritas] Strategy 1 failed:", msg);
     }
@@ -100,8 +100,8 @@ export async function getTranscript(url: string): Promise<TranscriptSegment[]> {
             return transcript;
         }
         errors.push("Strategy 2: returned empty transcript");
-    } catch (e: any) {
-        const msg = e?.message || String(e);
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
         errors.push(`Strategy 2: ${msg}`);
         console.warn("[Veritas] Strategy 2 failed:", msg);
     }
@@ -124,8 +124,8 @@ export async function getTranscript(url: string): Promise<TranscriptSegment[]> {
             }];
         }
         errors.push("Strategy 2.5: yt-dlp returned empty subtitles");
-    } catch (e: any) {
-        const msg = e?.message || String(e);
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
         errors.push(`Strategy 2.5: ${msg}`);
         console.warn("[Veritas] Strategy 2.5 failed:", msg);
     }
@@ -150,8 +150,8 @@ export async function getTranscript(url: string): Promise<TranscriptSegment[]> {
                     duration: 0
                 }];
             }
-        } catch (e: any) {
-            const msg = e?.message || String(e);
+        } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
             if (isWhisperRateLimited(msg)) {
                 markWhisperCooldown(msg);
                 const remainingSeconds = Math.ceil((whisperBlockedUntil - Date.now()) / 1000);
@@ -179,8 +179,8 @@ export async function getTranscript(url: string): Promise<TranscriptSegment[]> {
         }
 
         errors.push("Strategy 4: Metadata fallback returned empty content");
-    } catch (e: any) {
-        const msg = e?.message || String(e);
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
         errors.push(`Strategy 4: ${msg}`);
         console.error("[Veritas] Strategy 4 (metadata) failed:", msg);
     }
